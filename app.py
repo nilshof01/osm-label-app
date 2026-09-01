@@ -48,7 +48,12 @@ def get_st_canvas():
 
 @st.cache_resource
 def open_db() -> Client:
-    return create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
+    url = st.secrets.get("SUPABASE_URL") or os.environ.get("SUPABASE_URL")
+    key = st.secrets.get("SUPABASE_KEY") or os.environ.get("SUPABASE_KEY")
+    if not url or not key:
+        st.error("Set SUPABASE_URL and SUPABASE_KEY in secrets.")
+        st.stop()
+    return create_client(url, key)
 
 
 def _png_to_b64(img: Image.Image, mode: str) -> str:
