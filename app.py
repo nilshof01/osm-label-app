@@ -144,6 +144,20 @@ def all_kept_rows(con: Client) -> set[int]:
     return kept
 
 
+def _load_stats_cache(con: Client) -> None:
+    """Populate session-state caches from Supabase. Called once per session open
+    and after each decision so sliders/reruns don't hit the network."""
+    st.session_state._stats       = count_by(con)
+    st.session_state._reviewed    = all_reviewed_rows(con)
+    st.session_state._kept        = all_kept_rows(con)
+
+
+def _reviewed_cached() -> set[int]:
+    base: set[int] = st.session_state.get("_reviewed", set())
+    local: set[int] = st.session_state.get("local_reviewed", set())
+    return base | local
+
+
 # ---- Data --------------------------------------------------------------
 
 @st.cache_resource(show_spinner="Loading dataset...")
@@ -207,21 +221,14 @@ def build_bucket_positions(run_path: str, order_bytes: bytes) -> dict[int, list[
 
 # ---- Navigation --------------------------------------------------------
 
-def _reviewed_set(con: Client) -> set[int]:
-    """Merge Supabase-fetched reviewed rows with locally tracked ones."""
-    remote = all_reviewed_rows(con)
-    local: set[int] = st.session_state.get("local_reviewed", set())
-    return remote | local
-
-
 def _mark_local(row: int) -> None:
     if "local_reviewed" not in st.session_state:
         st.session_state.local_reviewed = set()
     st.session_state.local_reviewed.add(row)
 
 
-def next_unlabeled(order: np.ndarray, con: Client, start: int) -> int:
-    reviewed = _reviewed_set(con)
+def next_unlabeled(order: np.ndarray, start: int) -> int:
+    reviewed = _reviewed_cached()
     n = len(order)
     for i in range(start, n):
         if int(order[i]) not in reviewed:
@@ -229,20 +236,20 @@ def next_unlabeled(order: np.ndarray, con: Client, start: int) -> int:
     return n - 1
 
 
-def advance(order: np.ndarray, con: Client) -> None:
+def advance(order: np.ndarray) -> None:
     cur = st.session_state.cursor
-    st.session_state.cursor = min(next_unlabeled(order, con, cur + 1), len(order) - 1)
+    st.session_state.cursor = min(next_unlabeled(order, cur + 1), len(order) - 1)
 
 
-def advance_adaptive(order: np.ndarray, con: Client,
+def advance_adaptive(order: np.ndarray,
                      density_map: dict[int, int] | None,
                      bucket_pos: dict[int, list[int]]) -> None:
     if density_map is None:
-        advance(order, con)
+        advance(order)
         return
 
-    reviewed = _reviewed_set(con)
-    kept = all_kept_rows(con)
+    reviewed = _reviewed_cached()
+    kept: set[int] = st.session_state.get("_kept", set())
 
     bucket_counts = {i: 0 for i in range(N_BUCKETS)}
     for r in kept:
@@ -258,7 +265,7 @@ def advance_adaptive(order: np.ndarray, con: Client,
             best_bucket = b
 
     if best_bucket is None:
-        advance(order, con)
+        advance(order)
         return
 
     for pos in bucket_pos[best_bucket]:
@@ -266,7 +273,7 @@ def advance_adaptive(order: np.ndarray, con: Client,
             st.session_state.cursor = pos
             return
 
-    advance(order, con)
+    advance(order)
 
 
 def go_back() -> None:
@@ -470,14 +477,14 @@ def render_draw_mode(con: Client, order: np.ndarray, img: Image.Image,
             set_fix(con, row, tile_id, mask_from_image_data(canvas.image_data))
             set_decision(con, row, tile_id, "needs_fix")
             st.session_state.bbox_mode = False
-            advance_adaptive(order, con, density_map, bucket_pos); st.rerun()
+            advance_adaptive(order, density_map, bucket_pos); st.rerun()
     with c2:
         if st.button("save — ADD to existing", use_container_width=True):
             drawn = mask_from_image_data(canvas.image_data)
             set_fix(con, row, tile_id, mask_union(current_mask, drawn))
             set_decision(con, row, tile_id, "needs_fix")
             st.session_state.bbox_mode = False
-            advance_adaptive(order, con, density_map, bucket_pos); st.rerun()
+            advance_adaptive(order, density_map, bucket_pos); st.rerun()
     with c3:
         if st.button("cancel", use_container_width=True):
             st.session_state.bbox_mode = False; st.rerun()
@@ -506,9 +513,14 @@ def main() -> None:
         if key not in st.session_state:
             st.session_state[key] = val
 
+    # Load Supabase data once per session open (not on every slider rerun)
+    if "_reviewed" not in st.session_state:
+        with st.spinner("Loading labels…"):
+            _load_stats_cache(con)
+
     if st.session_state.cursor is None:
         st.session_state.cursor = 0
-        advance_adaptive(order, con, density_map, bucket_pos)
+        advance_adaptive(order, density_map, bucket_pos)
 
     cur    = st.session_state.cursor
     row    = int(order[cur])
@@ -525,34 +537,41 @@ def main() -> None:
     def decide(d: str) -> None:
         set_decision(con, row, tile_id, d)
         _mark_local(row)
-        advance_adaptive(order, con, density_map, bucket_pos)
+        _load_stats_cache(con)  # refresh cache after each decision
+        advance_adaptive(order, density_map, bucket_pos)
+
+    in_fix_mode = (st.session_state.bbox_mode or
+                   st.session_state.shift_mode or
+                   st.session_state.crop_mode)
 
     # --- Sidebar ---
     with st.sidebar:
         st.slider("image size (px)", 200, 700, key="img_size", step=20)
-        st.divider()
-        stats = count_by(con)
-        st.metric("keep",      stats.get("keep", 0))
-        st.metric("drop",      stats.get("drop", 0))
-        st.metric("needs_fix", stats.get("needs_fix", 0))
-
-        if density_map:
+        if not in_fix_mode:
             st.divider()
-            st.caption("kept chips by density bucket")
-            kept_db = all_kept_rows(con)
-            bucket_counts = {i: 0 for i in range(N_BUCKETS)}
-            for r in kept_db:
-                bucket_counts[density_bucket(density_map.get(r, 0))] += 1
-            target = max(bucket_counts.values(), default=1) or 1
-            for i, label in enumerate(BUCKET_LABELS):
-                c = bucket_counts[i]
-                st.progress(c / target, text=f"{label}: {c}")
-            cur_n = density_map.get(row, 0)
-            st.caption(f"this chip: **{cur_n}** instances "
-                       f"({BUCKET_LABELS[density_bucket(cur_n)]})")
+            stats = st.session_state.get("_stats", {})
+            st.metric("keep",      stats.get("keep", 0))
+            st.metric("drop",      stats.get("drop", 0))
+            st.metric("needs_fix", stats.get("needs_fix", 0))
+
+            if density_map:
+                st.divider()
+                st.caption("kept chips by density bucket")
+                kept_db: set[int] = st.session_state.get("_kept", set())
+                bucket_counts = {i: 0 for i in range(N_BUCKETS)}
+                for r in kept_db:
+                    bucket_counts[density_bucket(density_map.get(r, 0))] += 1
+                target = max(bucket_counts.values(), default=1) or 1
+                for i, label in enumerate(BUCKET_LABELS):
+                    c = bucket_counts[i]
+                    st.progress(c / target, text=f"{label}: {c}")
+                cur_n = density_map.get(row, 0)
+                st.caption(f"this chip: **{cur_n}** instances "
+                           f"({BUCKET_LABELS[density_bucket(cur_n)]})")
 
     # --- Header ---
     total   = len(order)
+    stats   = st.session_state.get("_stats", {})
     labeled = sum(stats.values())
     st.progress(labeled / total,
                 text=f"{labeled} / {total} reviewed  ·  pos {cur + 1}/{total}")
