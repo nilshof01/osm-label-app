@@ -110,25 +110,37 @@ def set_decision(con: Client, row: int, tile_id: str, dec: str) -> None:
     }).execute()
 
 
+def _fetch_all(query) -> list[dict]:
+    """Paginate through all rows (Supabase default cap is 1000)."""
+    rows, page_size, offset = [], 1000, 0
+    while True:
+        batch = query.range(offset, offset + page_size - 1).execute().data
+        rows.extend(batch)
+        if len(batch) < page_size:
+            break
+        offset += page_size
+    return rows
+
+
 def count_by(con: Client) -> dict[str, int]:
-    r = con.table("decisions").select("decision").execute()
+    rows = _fetch_all(con.table("decisions").select("decision"))
     counts: dict[str, int] = {}
-    for row in r.data:
+    for row in rows:
         d = row["decision"]
         counts[d] = counts.get(d, 0) + 1
     return counts
 
 
 def all_reviewed_rows(con: Client) -> set[int]:
-    r = con.table("decisions").select("dataset_row").execute()
-    return {int(row["dataset_row"]) for row in r.data}
+    rows = _fetch_all(con.table("decisions").select("dataset_row"))
+    return {int(row["dataset_row"]) for row in rows}
 
 
 def all_kept_rows(con: Client) -> set[int]:
-    r = con.table("decisions").select("dataset_row").eq("decision", "keep").execute()
-    kept = {int(row["dataset_row"]) for row in r.data}
-    r2 = con.table("fixes").select("dataset_row").execute()
-    kept |= {int(row["dataset_row"]) for row in r2.data}
+    kept = {int(r["dataset_row"]) for r in
+            _fetch_all(con.table("decisions").select("dataset_row").eq("decision", "keep"))}
+    kept |= {int(r["dataset_row"]) for r in
+             _fetch_all(con.table("fixes").select("dataset_row"))}
     return kept
 
 
