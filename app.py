@@ -371,6 +371,7 @@ def render_crop_mode(con: Client, img: Image.Image, current_mask: Image.Image,
             set_image_fix(con, row, tile_id, cropped_img)
             set_fix(con, row, tile_id, cropped_mask)
             set_decision(con, row, tile_id, "needs_fix")
+            _mark_local(row); _load_stats_cache(con)
             st.session_state.crop_mode = False
             reset(); st.rerun()
     with s2:
@@ -431,6 +432,7 @@ def render_shift_mode(con: Client, img: Image.Image, current_mask: Image.Image,
         if shortcut_button("Save shift (s)", shortcut="s", use_container_width=True):
             set_fix(con, row, tile_id, shifted)
             set_decision(con, row, tile_id, "needs_fix")
+            _mark_local(row); _load_stats_cache(con)
             st.session_state.shift_mode = False
             reset(); st.rerun()
     with s2:
@@ -476,6 +478,7 @@ def render_draw_mode(con: Client, order: np.ndarray, img: Image.Image,
         if st.button("save — REPLACE mask", use_container_width=True, type="primary"):
             set_fix(con, row, tile_id, mask_from_image_data(canvas.image_data))
             set_decision(con, row, tile_id, "needs_fix")
+            _mark_local(row); _load_stats_cache(con)
             st.session_state.bbox_mode = False
             advance_adaptive(order, density_map, bucket_pos); st.rerun()
     with c2:
@@ -483,6 +486,7 @@ def render_draw_mode(con: Client, order: np.ndarray, img: Image.Image,
             drawn = mask_from_image_data(canvas.image_data)
             set_fix(con, row, tile_id, mask_union(current_mask, drawn))
             set_decision(con, row, tile_id, "needs_fix")
+            _mark_local(row); _load_stats_cache(con)
             st.session_state.bbox_mode = False
             advance_adaptive(order, density_map, bucket_pos); st.rerun()
     with c3:
