@@ -195,8 +195,21 @@ def build_bucket_positions(run_path: str, order_bytes: bytes) -> dict[int, list[
 
 # ---- Navigation --------------------------------------------------------
 
+def _reviewed_set(con: Client) -> set[int]:
+    """Merge Supabase-fetched reviewed rows with locally tracked ones."""
+    remote = all_reviewed_rows(con)
+    local: set[int] = st.session_state.get("local_reviewed", set())
+    return remote | local
+
+
+def _mark_local(row: int) -> None:
+    if "local_reviewed" not in st.session_state:
+        st.session_state.local_reviewed = set()
+    st.session_state.local_reviewed.add(row)
+
+
 def next_unlabeled(order: np.ndarray, con: Client, start: int) -> int:
-    reviewed = all_reviewed_rows(con)
+    reviewed = _reviewed_set(con)
     n = len(order)
     for i in range(start, n):
         if int(order[i]) not in reviewed:
@@ -216,7 +229,7 @@ def advance_adaptive(order: np.ndarray, con: Client,
         advance(order, con)
         return
 
-    reviewed = all_reviewed_rows(con)
+    reviewed = _reviewed_set(con)
     kept = all_kept_rows(con)
 
     bucket_counts = {i: 0 for i in range(N_BUCKETS)}
@@ -498,6 +511,7 @@ def main() -> None:
 
     def decide(d: str) -> None:
         set_decision(con, row, tile_id, d)
+        _mark_local(row)
         advance_adaptive(order, con, density_map, bucket_pos)
 
     # --- Sidebar ---
