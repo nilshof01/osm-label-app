@@ -495,7 +495,8 @@ def main() -> None:
             st.session_state[key] = val
 
     if st.session_state.cursor is None:
-        st.session_state.cursor = next_unlabeled(order, con, 0)
+        st.session_state.cursor = 0
+        advance_adaptive(order, con, density_map, bucket_pos)
 
     cur    = st.session_state.cursor
     row    = int(order[cur])
@@ -556,29 +557,7 @@ def main() -> None:
         render_crop_mode(con, img, display_mask, row, tile_id, st.session_state.img_size)
         return
 
-    # --- Action buttons ---
-    b1, b2, b3, b4, b5, b6, b7 = st.columns(7)
-    clicked: str | None = None
-    with b1:
-        if shortcut_button("Keep",      shortcut="k", use_container_width=True): clicked = "keep"
-    with b2:
-        if shortcut_button("Drop",      shortcut="d", use_container_width=True): clicked = "drop"
-    with b3:
-        if shortcut_button("Needs fix", shortcut="n", use_container_width=True): clicked = "needs_fix"
-    with b4:
-        if shortcut_button("Back",      shortcut="b", use_container_width=True):
-            go_back(); st.rerun()
-    with b5:
-        if st.button("Shift labels", use_container_width=True):
-            st.session_state.shift_mode = True; st.rerun()
-    with b6:
-        if st.button("Draw", use_container_width=True):
-            st.session_state.bbox_mode = True; st.rerun()
-    with b7:
-        if st.button("Crop", use_container_width=True):
-            st.session_state.crop_mode = True; st.rerun()
-
-    # --- Images ---
+    # --- Images (above buttons so they're visible without scrolling in landscape) ---
     size = st.session_state.img_size
     col1, col2 = st.columns(2)
     with col1:
@@ -592,6 +571,29 @@ def main() -> None:
         else:
             cap = "mask overlay"
         st.image(overlay_mask(display_img, display_mask), caption=cap, width=size)
+
+    # --- Action buttons (two rows for mobile friendliness) ---
+    clicked: str | None = None
+    b1, b2, b3 = st.columns(3)
+    with b1:
+        if shortcut_button("✅ Keep",      shortcut="k", use_container_width=True, type="primary"): clicked = "keep"
+    with b2:
+        if shortcut_button("❌ Drop",      shortcut="d", use_container_width=True): clicked = "drop"
+    with b3:
+        if shortcut_button("🔧 Needs fix", shortcut="n", use_container_width=True): clicked = "needs_fix"
+    b4, b5, b6, b7 = st.columns(4)
+    with b4:
+        if shortcut_button("⬅ Back", shortcut="b", use_container_width=True):
+            go_back(); st.rerun()
+    with b5:
+        if st.button("Shift", use_container_width=True):
+            st.session_state.shift_mode = True; st.rerun()
+    with b6:
+        if st.button("Draw", use_container_width=True):
+            st.session_state.bbox_mode = True; st.rerun()
+    with b7:
+        if st.button("Crop", use_container_width=True):
+            st.session_state.crop_mode = True; st.rerun()
 
     meta_bits = [f"`tile_id`={tile_id}"] + [
         f"`{k}`={sample[k]}"
